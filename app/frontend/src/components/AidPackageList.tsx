@@ -1,10 +1,11 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useAidPackages } from '@/hooks/useAidPackages';
 
 export const AidPackageList: React.FC = () => {
-  const { data: packages, isLoading, error } = useAidPackages();
+  const [page, setPage] = useState(1);
+  const { data, isLoading, error } = useAidPackages(page, 10);
 
   if (isLoading) {
     return (
@@ -23,6 +24,8 @@ export const AidPackageList: React.FC = () => {
     );
   }
 
+  const packages = data?.data;
+
   if (!packages || packages.length === 0) {
     return <div className="text-gray-500">No aid packages found.</div>;
   }
@@ -38,12 +41,13 @@ export const AidPackageList: React.FC = () => {
           >
             <div className="flex justify-between items-start">
               <div>
-                <h4 className="font-medium">{pkg.name}</h4>
+                <h4 className="font-medium">{pkg.title || pkg.name}</h4>
                 <p className="text-sm text-gray-500">ID: {pkg.id}</p>
+                {pkg.region && <p className="text-sm text-gray-500">{pkg.region}</p>}
               </div>
               <span
                 className={`px-2 py-1 text-xs rounded-full ${
-                  pkg.status === 'delivered'
+                  pkg.status === 'delivered' || pkg.status === 'Active'
                     ? 'bg-green-100 text-green-800'
                     : pkg.status === 'cancelled'
                       ? 'bg-red-100 text-red-800'
@@ -53,9 +57,38 @@ export const AidPackageList: React.FC = () => {
                 {pkg.status}
               </span>
             </div>
+            {(pkg.amount || pkg.recipients) && (
+              <div className="mt-2 text-sm text-gray-600 flex gap-4">
+                {pkg.amount && <span>{pkg.amount}</span>}
+                {pkg.recipients && <span>{pkg.recipients} recipients</span>}
+              </div>
+            )}
           </div>
         ))}
       </div>
+      
+      {/* Pagination Controls */}
+      {data?.meta && (
+        <div className="flex justify-between items-center pt-4">
+          <button
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+            disabled={page === 1}
+            className="px-4 py-2 text-sm border rounded-lg disabled:opacity-50"
+          >
+            Previous
+          </button>
+          <span className="text-sm text-gray-600">
+            Page {data.meta.page} of {data.meta.totalPages}
+          </span>
+          <button
+            onClick={() => setPage(p => Math.min(data.meta.totalPages, p + 1))}
+            disabled={page === data.meta.totalPages}
+            className="px-4 py-2 text-sm border rounded-lg disabled:opacity-50"
+          >
+            Next
+          </button>
+        </div>
+      )}
     </div>
   );
 };
