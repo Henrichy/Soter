@@ -232,6 +232,17 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* QR Scanner FAB */}
+      <TouchableOpacity
+        style={styles.scannerFab}
+        onPress={() => navigation.navigate('Scanner')}
+        activeOpacity={0.8}
+        accessibilityRole="button"
+        accessibilityLabel="Scan QR Code"
+      >
+        <Text style={styles.scannerFabIcon}>📷</Text>
+      </TouchableOpacity>
     </SafeAreaView>
   );
 };
@@ -458,5 +469,24 @@ const makeStyles = (colors: AppColors) =>
       color: colors.textSecondary,
       fontSize: 16,
       fontWeight: '600',
+    },
+    scannerFab: {
+      position: 'absolute',
+      right: 24,
+      bottom: 24,
+      width: 64,
+      height: 64,
+      borderRadius: 32,
+      backgroundColor: colors.brand.primary,
+      justifyContent: 'center',
+      alignItems: 'center',
+      shadowColor: colors.brand.primary,
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.3,
+      shadowRadius: 10,
+      elevation: 8,
+    },
+    scannerFabIcon: {
+      fontSize: 28,
     },
   });

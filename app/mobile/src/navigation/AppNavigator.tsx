@@ -1,5 +1,4 @@
 import React from 'react';
-import { TouchableOpacity } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList } from './types';
 import { HomeScreen } from '../screens/HomeScreen';
@@ -7,6 +6,7 @@ import { HealthScreen } from '../screens/HealthScreen';
 import { AidOverviewScreen } from '../screens/AidOverviewScreen';
 import { AidDetailsScreen } from '../screens/AidDetailsScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
+import { ScannerScreen } from '../screens/ScannerScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -16,11 +16,11 @@ export const AppNavigator = () => {
       <Stack.Screen
         name="Home"
         component={HomeScreen}
-        options={({ navigation }) => ({
+        options={{
           headerShown: false,
           // Settings gear accessible from Home via header right
           // (HomeScreen has headerShown: false, so we add a floating button there instead)
-        })}
+        }}
       />
       <Stack.Screen
         name="Health"
@@ -36,6 +36,11 @@ export const AppNavigator = () => {
         name="AidDetails"
         component={AidDetailsScreen}
         options={{ title: 'Aid Details' }}
+      />
+      <Stack.Screen
+        name="Scanner"
+        component={ScannerScreen}
+        options={{ title: 'Scan QR Code', presentation: 'modal' }}
       />
       <Stack.Screen
         name="Settings"

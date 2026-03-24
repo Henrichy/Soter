@@ -24,6 +24,7 @@
     "@walletconnect/sign-client": "^2.23.8",
     "expo": "~54.0.31",
     "expo-asset": "^12.0.12",
+    "expo-barcode-scanner": "~12.5.3",
     "expo-constants": "~18.0.13",
     "expo-linking": "~8.0.11",
     "expo-local-authentication": "^55.0.9",
