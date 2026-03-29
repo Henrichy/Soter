@@ -11,7 +11,7 @@ import {
   BreakdownEntry,
   TimeframeBucket,
 } from './dto';
-import { RedisService } from 'cache/redis.service';
+import { RedisService } from '../../cache/redis.service';
 
 
 const CACHE_TTL_SECONDS = 300; // 5 minutes
