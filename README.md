@@ -74,6 +74,7 @@ Soter uses a monorepo under the `app` parent folder for streamlined development:
 ### Prerequisites
 
 - Node.js ≥ 18
+- pnpm ≥ 9 (Required)
 - Rust (for Soroban contracts)
 - Stellar wallet (e.g., Freighter for testing)
 - PostgreSQL (local or Supabase)
@@ -181,6 +182,11 @@ MIT License—see [LICENSE](LICENSE) for details.
 - [NestJS](https://nestjs.com) – Enterprise-grade backend.
 - [Soroban](https://soroban.stellar.org) – Smart contracts on Stellar.
 - Inspired by GiveDirectly & MSF for transparent aid.
+
+  
+## Support & Community
+- Join the [Soter Discord](https://discord.gg/gBmApTNVV) for real-time help, discussions, and updates.
+- Have questions? Open an issue or DM @pulsefy.
 
 ---
 

@@ -1,391 +1,272 @@
-// app/onchain/contracts/aid_escrow/tests/events.rs
-// Comprehensive event emission tests for AidEscrow contract
+//! Assert that AidEscrow emits the correct indexer-friendly events for each key transition.
 
 #![cfg(test)]
 
-
-
+use aid_escrow::{AidEscrow, AidEscrowClient};
 use soroban_sdk::{
+    Address, Env, Symbol, TryFromVal, Val, Vec,
     testutils::{Address as _, Events, Ledger},
-    Address, Env, Symbol, Val, TryFromVal,
+    token::{StellarAssetClient, TokenClient},
 };
 
-// Import from your main contract
-use aid_escrow::{
-    AidEscrow, AidEscrowClient, PackageStatus, EVENT_CONTRACT_INITIALIZED,
-    EVENT_PACKAGE_CANCELLED, EVENT_PACKAGE_CLAIMED, EVENT_PACKAGE_CREATED, EVENT_PACKAGE_EXPIRED,
-};
+fn setup_token(env: &Env, admin: &Address) -> (TokenClient<'static>, StellarAssetClient<'static>) {
+    let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+    let token_client = TokenClient::new(env, &token_contract.address());
+    let token_admin_client = StellarAssetClient::new(env, &token_contract.address());
+    (token_client, token_admin_client)
+}
 
-fn setup_test() -> (Env, AidEscrowClient<'static>, Address) {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(AidEscrow, ());
-    let client = AidEscrowClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
-    (env, client, admin)
+fn sym(env: &Env, s: &str) -> Symbol {
+    Symbol::new(env, s)
+}
+
+/// Returns events emitted by the given contract.
+fn contract_events(env: &Env, contract_id: &Address) -> std::vec::Vec<(Address, Vec<Val>, Val)> {
+    env.events()
+        .all()
+        .into_iter()
+        .filter(|(id, _, _)| id == contract_id)
+        .collect()
+}
+
+/// Finds the last event with the given topic symbol and returns its data Val.
+fn last_event_data(env: &Env, contract_id: &Address, topic: &str) -> Val {
+    let expected = sym(env, topic);
+    let events = contract_events(env, contract_id);
+    for (_, topics, data) in events.iter().rev() {
+        if let Some(first) = topics.first()
+            && let Ok(s) = Symbol::try_from_val(env, &first)
+            && s == expected
+        {
+            return *data;
+        }
+    }
+    panic!(
+        "expected event with topic '{}', found {} contract events",
+        topic,
+        events.len()
+    );
+}
+
+/// Extract a u64 field from an event data map.
+fn data_u64(env: &Env, data: &Val, field: &str) -> u64 {
+    let map = soroban_sdk::Map::<Symbol, Val>::try_from_val(env, data).unwrap();
+    let val = map.get(sym(env, field)).expect("missing field");
+    u64::try_from_val(env, &val).expect("not u64")
+}
+
+/// Extract an i128 field from an event data map.
+fn data_i128(env: &Env, data: &Val, field: &str) -> i128 {
+    let map = soroban_sdk::Map::<Symbol, Val>::try_from_val(env, data).unwrap();
+    let val = map.get(sym(env, field)).expect("missing field");
+    i128::try_from_val(env, &val).expect("not i128")
+}
+
+/// Extract an Address field from an event data map.
+fn data_address(env: &Env, data: &Val, field: &str) -> Address {
+    let map = soroban_sdk::Map::<Symbol, Val>::try_from_val(env, data).unwrap();
+    let val = map.get(sym(env, field)).expect("missing field");
+    Address::try_from_val(env, &val).expect("not address")
+}
+
+/// Assert a u64 field exists in the event data (without checking value).
+fn assert_field_exists(env: &Env, data: &Val, field: &str) {
+    let map = soroban_sdk::Map::<Symbol, Val>::try_from_val(env, data).unwrap();
+    assert!(
+        map.get(sym(env, field)).is_some(),
+        "field '{}' missing from event data",
+        field
+    );
 }
 
 #[test]
-fn test_contract_initialized_event() {
+fn test_escrow_funded_event() {
     let env = Env::default();
     env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let (token_client, token_admin_client) = setup_token(&env, &admin);
+
     let contract_id = env.register(AidEscrow, ());
     let client = AidEscrowClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
+    client.init(&admin);
 
-    client.initialize(&admin);
+    token_admin_client.mint(&admin, &10_000);
+    client.fund(&token_client.address, &admin, &5000);
 
-    // Get events
-    let events = env.events().all();
-
-    // Find ContractInitialized event
-    let init_event = events.iter().find(|e| {
-        if let Ok((_, topics, _)) = e.clone().try_into() {
-            let topic_vec: soroban_sdk::Vec<Val> = topics;
-            if let Some(first_topic) = topic_vec.first() {
-                if let Ok(symbol) = Symbol::try_from_val(&env, &first_topic) {
-                    return symbol == Symbol::new(&env, EVENT_CONTRACT_INITIALIZED);
-                }
-            }
-        }
-        false
-    });
-
-    assert!(init_event.is_some(), "ContractInitialized event not found");
+    let data = last_event_data(&env, &contract_id, "escrow_funded");
+    assert_eq!(data_address(&env, &data, "from"), admin);
+    assert_eq!(data_i128(&env, &data, "amount"), 5000);
+    assert_field_exists(&env, &data, "timestamp");
 }
 
 #[test]
 fn test_package_created_event() {
-    let (env, client, _admin) = setup_test();
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let token = Address::generate(&env);
-    let amount: i128 = 1000;
-    let expires_in: u64 = 86400;
+    let (token_client, token_admin_client) = setup_token(&env, &admin);
 
-    let package_id = client.create_package(&recipient, &amount, &token, &expires_in);
+    let contract_id = env.register(AidEscrow, ());
+    let client = AidEscrowClient::new(&env, &contract_id);
+    client.init(&admin);
+    token_admin_client.mint(&admin, &10_000);
+    client.fund(&token_client.address, &admin, &5000);
 
-    // Get events
-    let events = env.events().all();
-
-    // Find PackageCreated event
-    let package_created_event = events.iter().find(|e| {
-        if let Ok((_, topics, _)) = e.clone().try_into() {
-            let topic_vec: soroban_sdk::Vec<Val> = topics;
-            if let Some(first_topic) = topic_vec.first() {
-                if let Ok(symbol) = Symbol::try_from_val(&env, &first_topic) {
-                    return symbol == Symbol::new(&env, EVENT_PACKAGE_CREATED);
-                }
-            }
-        }
-        false
-    });
-
-    assert!(
-        package_created_event.is_some(),
-        "PackageCreated event not found"
+    let expires_at = env.ledger().timestamp() + 86400;
+    client.create_package(
+        &admin,
+        &42u64,
+        &recipient,
+        &1000,
+        &token_client.address,
+        &expires_at,
     );
 
-    // Verify the package was created
-    let package = client.get_package(&package_id).unwrap();
-    assert_eq!(package.recipient, recipient);
-    assert_eq!(package.amount, amount);
-    assert_eq!(package.status, PackageStatus::Created);
+    let data = last_event_data(&env, &contract_id, "package_created");
+    assert_eq!(data_u64(&env, &data, "package_id"), 42);
+    assert_eq!(data_address(&env, &data, "recipient"), recipient);
+    assert_eq!(data_i128(&env, &data, "amount"), 1000);
+    assert_eq!(data_address(&env, &data, "actor"), admin);
+    assert_field_exists(&env, &data, "timestamp");
 }
 
 #[test]
 fn test_package_claimed_event() {
-    let (env, client, _admin) = setup_test();
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let token = Address::generate(&env);
-    let amount: i128 = 500;
+    let (token_client, token_admin_client) = setup_token(&env, &admin);
 
-    let package_id = client.create_package(&recipient, &amount, &token, &86400);
+    let contract_id = env.register(AidEscrow, ());
+    let client = AidEscrowClient::new(&env, &contract_id);
+    client.init(&admin);
+    token_admin_client.mint(&admin, &10_000);
+    client.fund(&token_client.address, &admin, &5000);
 
-    // Clear events from creation
-    let events_before = env.events().all().len();
-
-    client.claim_package(&package_id);
-
-    // Get events
-    let events = env.events().all();
-
-    // Find PackageClaimed event (skip earlier events)
-    let package_claimed_event = events.iter().skip(events_before as usize).find(|e| {
-        if let Ok((_, topics, _)) = e.clone().try_into() {
-            let topic_vec: soroban_sdk::Vec<Val> = topics;
-            if let Some(first_topic) = topic_vec.first() {
-                if let Ok(symbol) = Symbol::try_from_val(&env, &first_topic) {
-                    return symbol == Symbol::new(&env, EVENT_PACKAGE_CLAIMED);
-                }
-            }
-        }
-        false
-    });
-
-    assert!(
-        package_claimed_event.is_some(),
-        "PackageClaimed event not found"
+    let expires_at = env.ledger().timestamp() + 86400;
+    client.create_package(
+        &admin,
+        &0u64,
+        &recipient,
+        &1000,
+        &token_client.address,
+        &expires_at,
     );
+    client.claim(&0u64);
 
-    // Verify the package was claimed
-    let package = client.get_package(&package_id).unwrap();
-    assert_eq!(package.status, PackageStatus::Claimed);
+    let data = last_event_data(&env, &contract_id, "package_claimed");
+    assert_eq!(data_u64(&env, &data, "package_id"), 0);
+    assert_eq!(data_address(&env, &data, "recipient"), recipient);
+    assert_eq!(data_i128(&env, &data, "amount"), 1000);
+    assert_eq!(data_address(&env, &data, "actor"), recipient);
+    assert_field_exists(&env, &data, "timestamp");
 }
 
 #[test]
-fn test_package_expired_event() {
-    let (env, client, _admin) = setup_test();
+fn test_package_disbursed_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let token = Address::generate(&env);
-    let amount: i128 = 750;
-    let expires_in: u64 = 100; // Short expiry
+    let (token_client, token_admin_client) = setup_token(&env, &admin);
 
-    let package_id = client.create_package(&recipient, &amount, &token, &expires_in);
+    let contract_id = env.register(AidEscrow, ());
+    let client = AidEscrowClient::new(&env, &contract_id);
+    client.init(&admin);
+    token_admin_client.mint(&admin, &10_000);
+    client.fund(&token_client.address, &admin, &5000);
 
-    // Fast-forward time past expiry
-    env.ledger().with_mut(|li| {
-        li.timestamp = li.timestamp + expires_in + 1;
-    });
-
-    let events_before = env.events().all().len();
-
-    // Try to claim - should fail and emit expired event
-    let result = client.try_claim_package(&package_id);
-    assert!(result.is_err());
-
-    // Get events
-    let events = env.events().all();
-
-    // Find PackageExpired event
-    let package_expired_event = events.iter().skip(events_before as usize).find(|e| {
-        if let Ok((_, topics, _)) = e.clone().try_into() {
-            let topic_vec: soroban_sdk::Vec<Val> = topics;
-            if let Some(first_topic) = topic_vec.first() {
-                if let Ok(symbol) = Symbol::try_from_val(&env, &first_topic) {
-                    return symbol == Symbol::new(&env, EVENT_PACKAGE_EXPIRED);
-                }
-            }
-        }
-        false
-    });
-
-    assert!(
-        package_expired_event.is_some(),
-        "PackageExpired event not found"
+    let expires_at = env.ledger().timestamp() + 86400;
+    client.create_package(
+        &admin,
+        &0u64,
+        &recipient,
+        &1000,
+        &token_client.address,
+        &expires_at,
     );
+    client.disburse(&0u64);
 
-    // Verify the package is expired
-    let package = client.get_package(&package_id).unwrap();
-    assert_eq!(package.status, PackageStatus::Expired);
+    let data = last_event_data(&env, &contract_id, "package_disbursed");
+    assert_eq!(data_u64(&env, &data, "package_id"), 0);
+    assert_eq!(data_address(&env, &data, "recipient"), recipient);
+    assert_eq!(data_i128(&env, &data, "amount"), 1000);
+    assert_eq!(data_address(&env, &data, "actor"), admin);
+    assert_field_exists(&env, &data, "timestamp");
 }
 
 #[test]
-fn test_package_cancelled_event() {
-    let (env, client, _admin) = setup_test();
+fn test_package_revoked_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let token = Address::generate(&env);
-    let amount: i128 = 300;
+    let (token_client, token_admin_client) = setup_token(&env, &admin);
 
-    let package_id = client.create_package(&recipient, &amount, &token, &86400);
+    let contract_id = env.register(AidEscrow, ());
+    let client = AidEscrowClient::new(&env, &contract_id);
+    client.init(&admin);
+    token_admin_client.mint(&admin, &10_000);
+    client.fund(&token_client.address, &admin, &5000);
 
-    let events_before = env.events().all().len();
-
-    client.cancel_package(&package_id);
-
-    // Get events
-    let events = env.events().all();
-
-    // Find PackageCancelled event
-    let package_cancelled_event = events.iter().skip(events_before as usize).find(|e| {
-        if let Ok((_, topics, _)) = e.clone().try_into() {
-            let topic_vec: soroban_sdk::Vec<Val> = topics;
-            if let Some(first_topic) = topic_vec.first() {
-                if let Ok(symbol) = Symbol::try_from_val(&env, &first_topic) {
-                    return symbol == Symbol::new(&env, EVENT_PACKAGE_CANCELLED);
-                }
-            }
-        }
-        false
-    });
-
-    assert!(
-        package_cancelled_event.is_some(),
-        "PackageCancelled event not found"
+    let expires_at = env.ledger().timestamp() + 86400;
+    client.create_package(
+        &admin,
+        &0u64,
+        &recipient,
+        &1000,
+        &token_client.address,
+        &expires_at,
     );
+    client.revoke(&0u64);
 
-    // Verify the package was cancelled
-    let package = client.get_package(&package_id).unwrap();
-    assert_eq!(package.status, PackageStatus::Cancelled);
+    let data = last_event_data(&env, &contract_id, "package_revoked");
+    assert_eq!(data_u64(&env, &data, "package_id"), 0);
+    assert_eq!(data_address(&env, &data, "recipient"), recipient);
+    assert_eq!(data_i128(&env, &data, "amount"), 1000);
+    assert_eq!(data_address(&env, &data, "actor"), admin);
+    assert_field_exists(&env, &data, "timestamp");
 }
 
 #[test]
-fn test_multiple_events_in_workflow() {
-    let (env, client, _admin) = setup_test();
+fn test_package_refunded_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let token = Address::generate(&env);
-    let amount: i128 = 1500;
+    let (token_client, token_admin_client) = setup_token(&env, &admin);
 
-    // Complete workflow: create -> claim
-    let package_id = client.create_package(&recipient, &amount, &token, &86400);
-    client.claim_package(&package_id);
+    let contract_id = env.register(AidEscrow, ());
+    let client = AidEscrowClient::new(&env, &contract_id);
+    client.init(&admin);
+    token_admin_client.mint(&admin, &10_000);
+    client.fund(&token_client.address, &admin, &5000);
 
-    // Get all events
-    let events = env.events().all();
-
-    // Count PackageCreated and PackageClaimed events
-    let mut created_count = 0;
-    let mut claimed_count = 0;
-
-    for event in events.iter() {
-        if let Ok((_, topics, _)) = event.clone().try_into() {
-            let topic_vec: soroban_sdk::Vec<Val> = topics;
-            if let Some(first_topic) = topic_vec.first() {
-                if let Ok(symbol) = Symbol::try_from_val(&env, &first_topic) {
-                    if symbol == Symbol::new(&env, EVENT_PACKAGE_CREATED) {
-                        created_count += 1;
-                    } else if symbol == Symbol::new(&env, EVENT_PACKAGE_CLAIMED) {
-                        claimed_count += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    assert_eq!(
-        created_count, 1,
-        "Should have exactly 1 PackageCreated event"
-    );
-    assert_eq!(
-        claimed_count, 1,
-        "Should have exactly 1 PackageClaimed event"
-    );
-}
-
-#[test]
-fn test_multiple_packages_separate_events() {
-    let (env, client, _admin) = setup_test();
-    let recipient1 = Address::generate(&env);
-    let recipient2 = Address::generate(&env);
-    let token = Address::generate(&env);
-
-    // Create two packages
-    let package_id_1 = client.create_package(&recipient1, &1000, &token, &86400);
-    let package_id_2 = client.create_package(&recipient2, &2000, &token, &86400);
-
-    // Claim first package
-    client.claim_package(&package_id_1);
-
-    // Cancel second package
-    client.cancel_package(&package_id_2);
-
-    // Get all events
-    let events = env.events().all();
-
-    // Count event types
-    let mut created_count = 0;
-    let mut claimed_count = 0;
-    let mut cancelled_count = 0;
-
-    for event in events.iter() {
-        if let Ok((_, topics, _)) = event.clone().try_into() {
-            let topic_vec: soroban_sdk::Vec<Val> = topics;
-            if let Some(first_topic) = topic_vec.first() {
-                if let Ok(symbol) = Symbol::try_from_val(&env, &first_topic) {
-                    if symbol == Symbol::new(&env, EVENT_PACKAGE_CREATED) {
-                        created_count += 1;
-                    } else if symbol == Symbol::new(&env, EVENT_PACKAGE_CLAIMED) {
-                        claimed_count += 1;
-                    } else if symbol == Symbol::new(&env, EVENT_PACKAGE_CANCELLED) {
-                        cancelled_count += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    assert_eq!(created_count, 2, "Should have 2 PackageCreated events");
-    assert_eq!(claimed_count, 1, "Should have 1 PackageClaimed event");
-    assert_eq!(cancelled_count, 1, "Should have 1 PackageCancelled event");
-
-    // Verify package states
-    let package1 = client.get_package(&package_id_1).unwrap();
-    assert_eq!(package1.status, PackageStatus::Claimed);
-
-    let package2 = client.get_package(&package_id_2).unwrap();
-    assert_eq!(package2.status, PackageStatus::Cancelled);
-}
-
-#[test]
-fn test_event_topics_include_package_id() {
-    let (env, client, _admin) = setup_test();
-    let recipient = Address::generate(&env);
-    let token = Address::generate(&env);
-
-    let package_id = client.create_package(&recipient, &1000, &token, &86400);
-
-    // Get events
-    let events = env.events().all();
-
-    // Find PackageCreated event and verify it has package_id in topics
-    let package_created_event = events.iter().find(|e| {
-        if let Ok((_, topics, _)) = e.clone().try_into() {
-            let topic_vec: soroban_sdk::Vec<Val> = topics;
-            if let Some(first_topic) = topic_vec.first() {
-                if let Ok(symbol) = Symbol::try_from_val(&env, &first_topic) {
-                    return symbol == Symbol::new(&env, EVENT_PACKAGE_CREATED);
-                }
-            }
-        }
-        false
-    });
-
-    assert!(
-        package_created_event.is_some(),
-        "PackageCreated event not found"
+    let expires_at = env.ledger().timestamp() + 1;
+    client.create_package(
+        &admin,
+        &0u64,
+        &recipient,
+        &1000,
+        &token_client.address,
+        &expires_at,
     );
 
-    // Verify topics contain both event name and package_id
-    if let Ok((_, topics, _)) = package_created_event.unwrap().clone().try_into() {
-        let topic_vec: soroban_sdk::Vec<Val> = topics;
-        // First topic is event name, second should be package_id
-        assert!(topic_vec.len() >= 1, "Topics should contain event name");
-    }
-}
+    env.ledger().set_timestamp(env.ledger().timestamp() + 2);
+    client.refund(&0u64);
 
-#[test]
-fn test_no_events_on_failed_operations() {
-    let (env, client, _admin) = setup_test();
-    let recipient = Address::generate(&env);
-    let token = Address::generate(&env);
-
-    let events_before = env.events().all().len();
-
-    // Try to create package with invalid amount (should fail)
-    let result = client.try_create_package(&recipient, &0, &token, &86400);
-    assert!(result.is_err());
-
-    // Should not have created any new events (except possibly initialization)
-    // The key is that no PackageCreated event should be emitted
-    let events = env.events().all();
-    let package_created_count = events
-        .iter()
-        .skip(events_before as usize)
-        .filter(|e| {
-            if let Ok((_, topics, _)) = e.clone().try_into() {
-                let topic_vec: soroban_sdk::Vec<Val> = topics;
-                if let Some(first_topic) = topic_vec.first() {
-                    if let Ok(symbol) = Symbol::try_from_val(&env, &first_topic) {
-                        return symbol == Symbol::new(&env, EVENT_PACKAGE_CREATED);
-                    }
-                }
-            }
-            false
-        })
-        .count();
-
-    assert_eq!(
-        package_created_count, 0,
-        "Should not emit PackageCreated on failed creation"
-    );
+    let data = last_event_data(&env, &contract_id, "package_refunded");
+    assert_eq!(data_u64(&env, &data, "package_id"), 0);
+    assert_eq!(data_address(&env, &data, "recipient"), recipient);
+    assert_eq!(data_i128(&env, &data, "amount"), 1000);
+    assert_eq!(data_address(&env, &data, "actor"), admin);
+    assert_field_exists(&env, &data, "timestamp");
 }
